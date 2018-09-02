@@ -6,7 +6,7 @@ import java.util.Properties
 
 import com.cloudera.sparkts.models.ARIMA
 import com.cloudera.sparkts.{DateTimeIndex, SecondFrequency, TimeSeriesRDD}
-import com.zuehlke.hackzurich.common.dataformats.Prediction
+import com.zuehlke.hackzurich.common.dataformats.BatteryLotPrediction
 import com.zuehlke.hackzurich.common.kafkautils.Topics
 import org.apache.commons.math3.exception.{MathIllegalArgumentException, NoDataException}
 import org.apache.commons.math3.linear.SingularMatrixException
@@ -31,26 +31,25 @@ object PredictionImpl extends IPrediction {
   /**
     * UserDefinedFunction to create a new Timestamp from given input columns
     */
-  val toDateUdf: UserDefinedFunction = udf((year: Int, month: Int, day: Int, hour: Int, minute: Int, second: Int) => {
-    val timeFormatted = s"$year-$month-$day $hour:$minute:$second.0"
+  val toDateUdf: UserDefinedFunction = udf((year: Int, month: Int, day: Int, hour: Int, minute: Int) => {
+    val timeFormatted = s"$year-$month-$day $hour:$minute:00.0"
     Timestamp.valueOf(timeFormatted)
   })
 
   override def performPrediction(dataFrame: DataFrame, producerProperties: Properties): Unit = {
     // Aggregate data to a precision of seconds and calculate the mean
-    var observations = dataFrame.select("date", "deviceid", "z")
+    var observations = dataFrame.select("id", "date_observed", "free_slot_number")
     observations = observations.groupBy(
-      year(col("date")).alias("year"),
-      month(col("date")).alias("month"),
-      dayofmonth(col("date")).alias("day"),
-      hour(col("date")).alias("hour"),
-      minute(col("date")).alias("minute"),
-      second(col("date")).alias("second"),
-      col("deviceid")
-    ).agg(mean("z").as("z_average"))
+      year(col("date_observed")).alias("year"),
+      month(col("date_observed")).alias("month"),
+      dayofmonth(col("date_observed")).alias("day"),
+      hour(col("date_observed")).alias("hour"),
+      minute(col("date_observed")).alias("minute"),
+      col("id")
+    ).agg(mean("free_slot_number").as("free_slot_number_average"))
 
     // Add converted (aggregated) date back again
-    observations = observations.withColumn("timestamp", toDateUdf.apply(col("year"), col("month"), col("day"), col("hour"), col("minute"), col("second")))
+    observations = observations.withColumn("timestamp", toDateUdf.apply(col("year"), col("month"), col("day"), col("hour"), col("minute")))
 
     val firstDate: Timestamp = observations.select("timestamp").orderBy(asc("timestamp")).head().getAs[Timestamp]("timestamp")
     val lastDate: Timestamp = observations.select("timestamp").orderBy(desc("timestamp")).head().getAs[Timestamp]("timestamp")
@@ -60,11 +59,11 @@ object PredictionImpl extends IPrediction {
     val dtIndex = DateTimeIndex.uniformFromInterval(
       ZonedDateTime.of(firstDate.toLocalDateTime, zone),
       ZonedDateTime.of(lastDate.toLocalDateTime, zone),
-      new SecondFrequency(1))
+      new MinuteFrequency(1))
 
     // Align the data on the DateTimeIndex to create a TimeSeriesRDD
     val timeSeriesrdd = TimeSeriesRDD.timeSeriesRDDFromObservations(dtIndex, observations,
-      "timestamp", "deviceid", "z_average")
+      "timestamp", "id", "free_slot_number_average")
 
     // Compute missing values using linear interpolation
     val interpolatedTimeSeriesrdd = timeSeriesrdd.fill("linear")
@@ -100,7 +99,7 @@ object PredictionImpl extends IPrediction {
     }
 
     forecast.foreach { x =>
-      val predictionMessage = Prediction(lastDate.getTime, x._1, x._2.toArray)
+      val predictionMessage = BatteryLotPrediction(lastDate.getTime, x._1, x._2.toArray)
       new KafkaProducer[String, String](producerProperties).send(new ProducerRecord(KAFKA_TOPIC, x._1, predictionMessage.toCsv))
     }
   }
