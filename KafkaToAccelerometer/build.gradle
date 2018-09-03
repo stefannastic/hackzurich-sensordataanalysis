@@ -2,7 +2,7 @@ apply plugin: 'scala'
 apply plugin: 'application'
 
 group = "bwedenik"
-mainClassName = "com.zuehlke.hackzurich.KafkaToAccelerometer"
+mainClassName = "com.zuehlke.hackzurich.KafkaToBatteryLot"
 
 repositories {
     mavenCentral()

@@ -35,15 +35,16 @@ object KafkaToCassandraAccelerommeter {
     // More config options:, Topics.SENSOR_READING, OffsetResetConfig.Earliest)
 
     val keyFilter = MessageStream.filterKey
-    val accelerometerFilter = new SensorTypeFilter("Accelerometer")
+    val batteryFilter = new SensorTypeFilter("BatteryLot")
 
     val parsedMessages = messages
       .filter(keyFilter(_))
       .flatMap(SensorReadingJSON4SParser.parseWithJson4s)
-      .filter(accelerometerFilter(_))
-      .flatMap(AccelerometerReadingJSON4S.from(_))
-      .saveToCassandra("sensordata", "accelerometer", SomeColumns("date", "deviceid", "x", "y", "z"))
+      .filter(batteryFilter(_))
+      .flatMap(BatteryLotReadingJSON4S.from(_))
+      .saveToCassandra("sensordata", "batterylot", SomeColumns("id", "date_observed", "total_spot_number", "free_slot_number", "location_coordinates", "location_type"))
 
+      
     // Start the computation
     ssc.start()
     ssc.awaitTermination()

@@ -66,17 +66,17 @@ object KafkaToBatteryLot {
       .flatMap(SensorReadingJSON4SParser.parseWithJson4s).cache()
 
     // save BatteryLot
-    val batteryLotFilter = new SensorTypeFilter("BatteryLot")
+    val batteryLotFilter = new SensorTypeFilter("BicycleLot")
     val parsedBatteryLotMessages = parsedMessages
       .filter(batteryLotFilter(_))
       .flatMap(BatteryLotReadingJSON4S.from)
     parsedBatteryLotMessages
-      .saveToCassandra("sensordata", "batterylot", SomeColumns("id", "date_observed", "total_spot_number", "free_slot_number", "location_coordinates", "location_type"))
+      .saveToCassandra("sensordata", "batterylot", SomeColumns("id", "date_observed", "total_spot_number", "free_slot_number"))
 
     // publish latest accelerometer data to Kafka for the data-analytics application
     parsedBatteryLotMessages.foreachRDD { rdd =>
       rdd.take(KAFKA_PUBLISH_SIZE).foreach { batteryLot =>
-        new KafkaProducer[String, String](producerProps).send(new ProducerRecord(Topics.SENSOR_READING_ACCELEROMETER, batteryLot.deviceid, batteryLot.toCsv))
+        new KafkaProducer[String, String](producerProps).send(new ProducerRecord(Topics.SENSOR_READING_ACCELEROMETER, batteryLot.id.toString, batteryLot.toCsv))
       }
     }
 

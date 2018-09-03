@@ -1,7 +1,7 @@
 apply plugin: 'scala'
 apply plugin: 'application'
 
-group = "bwedenik"
+group = "snastic"
 mainClassName = "com.zuehlke.hackzurich.DataAnalytics"
 
 repositories {

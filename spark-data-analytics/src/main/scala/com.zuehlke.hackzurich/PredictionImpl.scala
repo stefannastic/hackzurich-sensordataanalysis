@@ -5,7 +5,7 @@ import java.time.{ZoneId, ZonedDateTime}
 import java.util.Properties
 
 import com.cloudera.sparkts.models.ARIMA
-import com.cloudera.sparkts.{DateTimeIndex, SecondFrequency, TimeSeriesRDD}
+import com.cloudera.sparkts.{DateTimeIndex, SecondFrequency,MinuteFrequency, TimeSeriesRDD}
 import com.zuehlke.hackzurich.common.dataformats.BatteryLotPrediction
 import com.zuehlke.hackzurich.common.kafkautils.Topics
 import org.apache.commons.math3.exception.{MathIllegalArgumentException, NoDataException}
