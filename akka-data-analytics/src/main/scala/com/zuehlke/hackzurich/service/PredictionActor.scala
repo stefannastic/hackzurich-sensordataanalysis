@@ -3,7 +3,7 @@ package com.zuehlke.hackzurich.service
 import java.text.SimpleDateFormat
 
 import akka.actor.Actor
-import com.zuehlke.hackzurich.common.dataformats.{AccelerometerReadingJSON4S, Prediction}
+import com.zuehlke.hackzurich.common.dataformats.{AccelerometerReadingJSON4S, Prediction, SinglePrediction}
 import com.zuehlke.hackzurich.service.PredictionActor._
 import com.zuehlke.hackzurich.service.SparkDataAnalyticsPollingActor.SparkAnalyticsData
 import com.zuehlke.hackzurich.service.SpeedLayerKafkaPollingActor.SpeedLayerData
@@ -18,39 +18,14 @@ class PredictionActor extends Actor {
   private val speedLayerDataMap = mutable.Map.empty[String, ArrayBuffer[(Long, Double)]]
 
   private val timeFormatter = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss")
-  private val TIME_THRESHOLD_MS = 2 * 60 * 1000
+  private val TIME_THRESHOLD_MS = 20 * 60 * 1000 // 20 Minutes
   private val WEIGHT_SPARK = 0.4
   private val WEIGHT_SPEED_LAYER = 0.6
 
   /**
-    * How far in the future we want to predict
+    * How far in the future we want to predict the speed Layer
     */
   val forecastTime = 5
-
-  private def compilePredictions(): Seq[Prediction] = {
-    val speedLayerBuffer = ArrayBuffer.empty[Prediction]
-
-    for (device <- speedLayerDataMap.keySet) {
-      val values = ArrayBuffer.empty[Double]
-      val timestamps = ArrayBuffer.empty[Long]
-      for (entry <- speedLayerDataMap(device)) {
-        values += entry._2
-        timestamps += entry._1
-      }
-      speedLayerBuffer += Prediction(timestamps.min, device, values)
-    }
-
-    val result = sparkAnalyticsData.values.toSeq ++ speedLayerBuffer
-
-    println(s"PredictionActor: speedLayerData: $speedLayerData")
-    println(s"PredictionActor: speedLayerDataMap: $speedLayerDataMap")
-    println(s"PredictionActor: speedLayerBuffer: $speedLayerBuffer")
-    println(s"PredictionActor: sparkAnalyticsData: $sparkAnalyticsData")
-    println(s"PredictionActor: result: $result")
-
-    speedLayerData.clear()
-    result
-  }
 
   private def updateSpeedLayerMap(): Unit = {
     for (x <- speedLayerData) {
@@ -95,125 +70,101 @@ class PredictionActor extends Actor {
       speedLayerData ++= x.data
       updateSpeedLayerMap()
     case RequestPrediction() =>
-      sender ! predictionsToString
+      sender ! predictionsToJSON
     case RequestSpeedLayerData() =>
-      sender ! speedLayerDataToString
+      sender ! speedLayerDataToJSON
     case RequestSpeedLayerPrediction() =>
-      sender ! forecastedSpeedLayerDataToString
+      sender ! forecastedSpeedLayerDataToJSON
     case RequestSparkDataAnalyticsPrediction() =>
-      sender ! sparkDataToString
+      sender ! sparkDataToJSON
     case RequestCombinedPrediction() =>
       sender ! combinedForecastData
     case x => println(s"PredictionActor: I got a weird message: $x")
   }
 
-  private def predictionsToString(): String = {
-    sparkDataToString + forecastedSpeedLayerDataToString + speedLayerDataToString
+  private def predictionsToJSON(): String = {
+    s"[ $sparkDataToJSON , $forecastedSpeedLayerDataToJSON , $speedLayerDataToJSON ]"
   }
 
-  private def sparkDataToString: String = {
-    val sb = new mutable.StringBuilder()
-    sb.append("                 SparkDataAnalytics Data              \n")
-    sb.append("======================================================\n")
-
-    for (device <- sparkAnalyticsData.keySet) {
-      sb.append(device).append("\n")
-      val p = sparkAnalyticsData(device)
-      appendPredictionToSB(sb, p)
+  private def sparkDataToJSON: String = {
+    val predictions = sparkAnalyticsData.values.toList
+    val singlePredictions = ArrayBuffer.empty[SinglePrediction]
+    for (p <- predictions) {
+      singlePredictions ++= predictionsToSinglePredictions(p, false, true, false)
     }
-    sb.append("\n\n")
-    sb.toString()
+    singlePredictions.mkString("[ ", " , ", " ]")
   }
 
-  private def appendPredictionToSB(sb: StringBuilder, p: Prediction) = {
+  private def predictionsToSinglePredictions(p: Prediction, speedLayer: Boolean, batchLayer: Boolean, combined: Boolean): Seq[SinglePrediction] = {
     var i = 0
+    val buffer = ArrayBuffer.empty[SinglePrediction]
     for (value <- p.values) {
-      sb.append(timeFormatter.format(p.timestamp + i))
-      sb.append(" - - - - ")
-      sb.append(value)
-      sb.append("\n")
-      i += 1000
+      val timeStamp = p.timestamp + 1000 * 60 // Add one minute as we predict in minute steps
+      val singlePrediction = SinglePrediction(p.deviceid, timeStamp, value, speedLayer, batchLayer, combined)
+      buffer ++= Seq(singlePrediction)
     }
-    sb.append("-------------------------------------------\n\n")
+    buffer.toList
   }
 
-  private def speedLayerDataToString: String = {
-    val sb = new mutable.StringBuilder()
-    sb.append("                     Speed Layer Data                 \n")
-    sb.append("======================================================\n")
+  private def speedLayerDataToJSON: String = {
+    val singlePredictions = ArrayBuffer.empty[SinglePrediction]
 
     for (device <- speedLayerDataMap.keySet) {
-      sb.append(device).append("\n")
       val p = speedLayerDataMap(device)
       for (value <- p) {
-        sb.append(timeFormatter.format(value._1))
-        sb.append(" - - - - ")
-        sb.append(value._2)
-        sb.append("\n")
+        singlePredictions ++= Seq(SinglePrediction(device, value._1, value._2, speedLayer = true, batchLayer = false, combined = false))
       }
-      sb.append("-------------------------------------------\n\n")
     }
-    sb.append("\n\n")
-    sb.toString()
+
+    singlePredictions.mkString("[ ", " , ", " ]")
   }
 
-  private def forecastedSpeedLayerDataToString: String = {
-    val sb = new mutable.StringBuilder()
-    sb.append("               FORECASTED Speed Layer Data            \n")
-    sb.append("======================================================\n")
+  private def forecastedSpeedLayerDataToJSON: String = {
+    val singlePredictions = ArrayBuffer.empty[SinglePrediction]
 
     for (device <- speedLayerDataMap.keySet) {
-      sb.append(device).append("\n")
-
-      val p = speedLayerDataMap(device)
-      appendSpeedLayerEntryToSB(sb, p)
+      singlePredictions ++= speedLayerEntriesToList(device, speedLayerDataMap(device))
     }
-    sb.append("\n\n")
-    sb.toString()
+
+    singlePredictions.mkString("[ ", " , ", " ]")
   }
 
-  private def appendSpeedLayerEntryToSB(sb: StringBuilder, predictionBuffer: ArrayBuffer[(Long, Double)]) = {
+  private def speedLayerEntriesToList(id: String, predictionBuffer: ArrayBuffer[(Long, Double)]): Seq[SinglePrediction] = {
+    val singlePredictions = ArrayBuffer.empty[SinglePrediction]
+
     val values = for (x <- predictionBuffer) yield x._2
     val timestamps = for (x <- predictionBuffer) yield x._1
     if (timestamps.nonEmpty) {
       val lastTimestamp = timestamps.max
-
       val predictions = forecast(values)
-      var i = 1000
+      var i = 1000 * 60
       for (value <- predictions) {
-        sb.append(timeFormatter.format(lastTimestamp + i))
-        sb.append(" - - - - ")
-        sb.append(value)
-        sb.append("\n")
-        i += 1000
+        val timeStamp = lastTimestamp + i
+        singlePredictions ++= Seq(SinglePrediction(id, timeStamp, value, speedLayer = true, batchLayer = false, combined = false))
       }
-      sb.append("-------------------------------------------\n\n")
     }
+    singlePredictions.toList
   }
 
   private def combinedForecastData: String = {
-    val sb = new mutable.StringBuilder()
-    sb.append("                  COMBINED Forecast Data              \n")
-    sb.append("======================================================\n")
+    val singlePredictions = ArrayBuffer.empty[SinglePrediction]
 
     for (device <- speedLayerDataMap.keySet ++ sparkAnalyticsData.keySet) {
-      sb.append(device).append("\n")
-
       val speedData = speedLayerDataMap.get(device)
       val sparkData = sparkAnalyticsData.get(device)
 
       (sparkData, speedData) match {
         case (None, None) => "Nothing in both maps?"
-        case (Some(spark), None) => sb.append("ONLY SPARK DATA AVAILABLE!\n")
-          appendPredictionToSB(sb, spark)
-        case (None, Some(speed)) => sb.append("ONLY SPEED LAYER DATA AVAILABLE!\n")
-          appendSpeedLayerEntryToSB(sb, speed)
+        case (Some(spark), None) =>
+          singlePredictions ++= predictionsToSinglePredictions(spark, speedLayer = false, batchLayer = true, combined = false)
+        case (None, Some(speed)) =>
+          singlePredictions ++= speedLayerEntriesToList(device, speed)
         case (Some(spark), Some(speed)) =>
           // create lists of predictions rounded to seconds, still we need milliseconds
           var i = 0
           val sparkPredictions = for (x <- spark.values) yield {
             val time = Math.round((spark.timestamp + i).toDouble / 1000) * 1000
-            i += 1000
+            i += 1000 * 60
             (time, x)
           }
           val speedPredictions = for (x <- speed) yield {
@@ -227,24 +178,15 @@ class PredictionActor extends Actor {
               if (p_spark._1 == p_speed._1) {
                 val valueSpark = p_spark._2
                 val valueSpeedLayer = p_speed._2
-                sb.append(timeFormatter.format(p_speed._1))
-                sb.append(" - - - - ")
-                sb.append("SPARK: ")
-                sb.append(valueSpark)
-                sb.append(" - - - - ")
-                sb.append("SPEED LAYER: ")
-                sb.append(valueSpeedLayer)
-                sb.append(s" ===> Weights: Spark $WEIGHT_SPARK , Speed Layer: $WEIGHT_SPEED_LAYER ======> ")
-                sb.append(valueSpark * WEIGHT_SPARK + valueSpeedLayer * WEIGHT_SPEED_LAYER)
-                sb.append("\n")
+                val timeStamp = p_speed._1
+                val weightedValue = valueSpark * WEIGHT_SPARK + valueSpeedLayer * WEIGHT_SPEED_LAYER
+                singlePredictions ++= Seq(SinglePrediction(device, timeStamp, weightedValue, speedLayer = false, batchLayer = false, combined = true))
               }
             }
           }
-          sb.append("-------------------------------------------\n\n")
       }
     }
-    sb.append("\n\n")
-    sb.toString()
+    singlePredictions.mkString("[ ", " , ", " ]")
   }
 
 }
